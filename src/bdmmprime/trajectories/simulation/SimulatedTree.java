@@ -1,15 +1,7 @@
 package bdmmprime.trajectories.simulation;
 
-import bdmmprime.parameterization.*;
-import bdmmprime.trajectories.*;
-import bdmmprime.trajectories.trajevents.*;
-import beast.core.Function;
-import beast.core.Input;
-import beast.core.parameter.RealParameter;
-import beast.evolution.tree.Node;
-import beast.evolution.tree.Tree;
-import beast.math.Binomial;
-import beast.util.Randomizer;
+import static bdmmprime.util.Utils.nextBinomial;
+import static org.apache.commons.math3.stat.StatUtils.sum;
 
 import java.io.FileNotFoundException;
 import java.io.PrintStream;
@@ -17,8 +9,25 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-import static bdmmprime.util.Utils.nextBinomial;
-import static org.apache.commons.math3.stat.StatUtils.sum;
+import bdmmprime.parameterization.CanonicalParameterization;
+import bdmmprime.parameterization.Parameterization;
+import bdmmprime.parameterization.SkylineMatrixParameter;
+import bdmmprime.parameterization.SkylineVectorParameter;
+import bdmmprime.parameterization.TimedParameter;
+import bdmmprime.parameterization.TypeSet;
+import bdmmprime.trajectories.Trajectory;
+import bdmmprime.trajectories.trajevents.BirthEvent;
+import bdmmprime.trajectories.trajevents.CrossBirthEvent;
+import bdmmprime.trajectories.trajevents.DeathEvent;
+import bdmmprime.trajectories.trajevents.MigrationEvent;
+import bdmmprime.trajectories.trajevents.SamplingEvent;
+import bdmmprime.trajectories.trajevents.TrajectoryEvent;
+import beast.core.Function;
+import beast.core.Input;
+import beast.core.parameter.RealParameter;
+import beast.evolution.tree.Node;
+import beast.evolution.tree.Tree;
+import beast.util.Randomizer;
 
 /**
  * Simulates a tree from a multi-type birth-death skyline process.
@@ -40,8 +49,11 @@ public class SimulatedTree extends Tree {
             "The equilibrium frequencies for each type",
             Input.Validate.REQUIRED);
 
-    public Input<Integer> minSamplesInput = new Input<>("minSamples",
+    public Input<Integer> minNonSaSamplesInput = new Input<>("minSamples",
             "Minimum number of samples to accept in simulated trajectory.", 1);
+
+    public Input<Integer> maxNonSaSamplesInput = new Input<>("maxSamples",
+            "Maximum number of samples to accept in simulated trajectory.", 1);
 
     public Input<String> typeLabelInput = new Input<>("typeLabel",
             "Used to label tree nodes with corresponding types.",
@@ -57,6 +69,10 @@ public class SimulatedTree extends Tree {
             "If true, an untyped tree will be simulated (i.e. migration events will be removed).",
             false);
 
+    public Input<RealParameter> counterInput = new Input<>("numRejectedTrees",
+            "The number of trees rejected during the simulation",
+            Input.Validate.REQUIRED);
+
     Parameterization param;
     RealParameter frequencies;
     double simulationTime;
@@ -67,19 +83,24 @@ public class SimulatedTree extends Tree {
     int nTypes;
     String typeLabel;
 
-    int minSamples;
+    int minNonSaSamples;
+    int maxNonSaSamples;
+
+    double counter;
 
     boolean simulateUntypedTree;
 
     public Trajectory traj;
+    private Tree tree = null;
 
     @Override
     public void initAndValidate() {
         param = parameterizationInput.get();
         frequencies = frequenciesInput.get();
-        simulationTime = param.originInput.get().getValue();
+        simulationTime = param.originInput.get().getArrayValue();
 
-        minSamples = minSamplesInput.get();
+        minNonSaSamples = minNonSaSamplesInput.get();
+        maxNonSaSamples = maxNonSaSamplesInput.get();
 
         nTypes = param.getNTypes();
         typeLabel = typeLabelInput.get();
@@ -93,12 +114,24 @@ public class SimulatedTree extends Tree {
         a_crossbirth = new double[nTypes][nTypes];
 
         traj = null;
+        counter = 0;
         do {
-            traj = simulateTrajectory();
-        } while (traj.getSampleCount() < Math.max(minSamples,1));
+            do {
+                traj = simulateTrajectory();
+                counter += 1;
+            } while (traj.getSampleCount() < 1);
+            tree = simulateTree();
+            assignFromWithoutID(tree);
+            this.leafNodeCount = traj.getSampleCount();
 
+        } while (traj.getSampleCount() - this.getDirectAncestorNodeCount() < Math.max(minNonSaSamples, 1) ||
+                traj.getSampleCount() - this.getDirectAncestorNodeCount() > Math.min(maxNonSaSamples,
+                        Double.POSITIVE_INFINITY));
+
+        RealParameter c = counterInput.get();
+        c.setValue(counter - 1);
         RealParameter fso = (RealParameter) finalSampleOffsetInput.get();
-        fso.setValue(param.originInput.get().getValue() - traj.getFinalSampleTime());
+        fso.setValue(param.originInput.get().getArrayValue() - traj.getFinalSampleTime());
 
         if (trajFileNameInput.get() != null) {
             try (PrintStream out = new PrintStream(trajFileNameInput.get())) {
@@ -110,8 +143,8 @@ public class SimulatedTree extends Tree {
             }
         }
 
-        Tree tree = simulateTree();
-        assignFromWithoutID(tree);
+
+
 
         if (treeFileNameInput.get() != null) {
             try (PrintStream out = new PrintStream(treeFileNameInput.get())) {
@@ -273,8 +306,8 @@ public class SimulatedTree extends Tree {
                 typeLabel, param.getTypeSet());
 
         for (TrajectoryEvent event : events) {
-                event.simulateTreeEvent(state, activeLineages, nodeFactory, simulateUntypedTree);
-                event.reverseUpdateState(state);
+            event.simulateTreeEvent(state, activeLineages, nodeFactory, simulateUntypedTree);
+            event.reverseUpdateState(state);
         }
 
         int nRemainingLineages = 0;
@@ -340,7 +373,7 @@ public class SimulatedTree extends Tree {
                         new RealParameter("2.0 3.0 4.0"),
                         new RealParameter("0.5 0.5 0.5"), 2));
 
-        SimulatedTree sim = new SimulatedTree();
+        bdmmprime.trajectories.simulation.SimulatedTree sim = new bdmmprime.trajectories.simulation.SimulatedTree();
         sim.initByName("parameterization", param,
                 "frequencies", new RealParameter("0.5 0.5"),
                 "simulationTime", "5.0");
